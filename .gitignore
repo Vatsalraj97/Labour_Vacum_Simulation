@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+dist/
+build/
+*.spec
+node_modules/
+output_*.csv
+output_*.png
+temp_params.json
+.vscode/settings.json

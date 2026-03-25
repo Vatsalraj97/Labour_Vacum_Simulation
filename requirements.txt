@@ -1,0 +1,7 @@
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+scipy>=1.10
+tqdm>=4.65
+PyQt6>=6.4.0
+pyqtgraph>=0.13.0
