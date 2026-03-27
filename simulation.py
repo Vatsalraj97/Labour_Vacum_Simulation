@@ -3,9 +3,15 @@
 # =============================================================================
 
 from __future__ import annotations
+import csv
+import dataclasses
+import datetime
+import json
 import random
+import uuid
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
@@ -35,7 +41,9 @@ class SimParams:
     reshoring_total_m  : float = config.RESHORING_TOTAL_M
     placement_prob     : float = config.PLACEMENT_PROBABILITY
     seed               : int   = 42
-    workforce_scale    : int   = 1   # divide all populations by this factor
+    workforce_scale    : int   = 1    # divide all populations by this factor
+    n_years            : int   = 8    # simulation length in years (8 = 2025-2033 baseline)
+    save_outputs       : bool  = True # write manifest + event_catalogue + quarterly_summary to disk
 
 
 # =============================================================================
@@ -74,12 +82,18 @@ class Simulation:
         self.rng = random.Random(self.params.seed)
         np.random.seed(self.params.seed)
 
+        self.run_id      = str(uuid.uuid4())[:8]
+        self.total_steps = self.params.n_years * config.QUARTERS_PER_YEAR
+        self.output_dir  : Optional[Path] = None
+
         self.tubes_by_tier: Dict[float, Tube] = {}
         self.pool = MarketPool()
         self._cumulative_exits: Dict[str, int] = {}
+        self._all_events      : list           = []
 
         self._initialise_tubes()
         self._populate_initial_workforce()
+        config.validate_config()
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
@@ -200,7 +214,7 @@ class Simulation:
         """
         snapshots = []
 
-        for step in range(config.TOTAL_STEPS):
+        for step in range(self.total_steps):
             year = config.START_YEAR + step / config.QUARTERS_PER_YEAR
 
             # 1. Demand
@@ -216,7 +230,14 @@ class Simulation:
             if self.rng.random() < self.params.shock_probability:
                 system_state.shock_active = {'policy': True}
 
-            # 4. Process all events
+            # 4. Process all events (with year-varying cohort applied temporarily)
+            # US Census projects working-age cohort declining ~0.8%/yr after 2027
+            # due to 2008-2009 birth-rate trough (ACS Table B01001)
+            cohort_year = config.START_YEAR + step / config.QUARTERS_PER_YEAR
+            cohort_decay = max(0.85, 1.0 - 0.008 * max(0.0, cohort_year - 2027.0))
+            original_cohort = config.ANNUAL_WORKING_AGE_COHORT
+            config.ANNUAL_WORKING_AGE_COHORT = int(original_cohort * cohort_decay)
+
             evt_log = event_engine.process_all_events(
                 self.tubes_by_tier,
                 self.pool,
@@ -225,17 +246,32 @@ class Simulation:
                 system_state,
                 self.params,
                 self.rng,
+                step=step,
+                year=year,
             )
 
+            config.ANNUAL_WORKING_AGE_COHORT = original_cohort
+
             # 5. Accumulate exits and snapshot
-            for _, _, reason in evt_log:
+            for evt in evt_log:
+                reason = evt['event_type']
                 self._cumulative_exits[reason] = (
                     self._cumulative_exits.get(reason, 0) + 1
                 )
             system_state.total_exits_this_quarter = len(evt_log)
+            self._all_events.extend(evt_log)
 
             snap = self._snapshot(step, year, evt_log, tube_states, system_state)
             snapshots.append(snap)
+
+            if __debug__:
+                live = sum(t.headcount for t in self.tubes_by_tier.values())
+                live += self.pool.size + len(self.pool.injured_waiting)
+                if live < 1000:  # only meaningful at low scale to avoid perf hit
+                    assert live >= 0, f"Q{step}: negative population {live}"
+
+        if self.params.save_outputs:
+            self._save_run_outputs(snapshots)
 
         return snapshots
 
@@ -258,7 +294,8 @@ class Simulation:
             })
 
         exits = {}
-        for _, _, reason in evt_log:
+        for evt in evt_log:
+            reason = evt['event_type']
             exits[reason] = exits.get(reason, 0) + 1
 
         return Snapshot(
@@ -271,6 +308,73 @@ class Simulation:
         )
 
     # ── Output helpers ────────────────────────────────────────────────────────
+
+    def _save_run_outputs(self, snapshots: List[Snapshot]) -> None:
+        """
+        Save three files per run into output/runs/run_TIMESTAMP_ID/:
+
+          manifest.json        — all SimParams + key config values at run start
+          event_catalogue.csv  — every event with ball state snapshot at event time
+          quarterly_summary.csv — per-tube per-quarter summary (analytics-ready)
+
+        Sets self.output_dir to the run directory path.
+        """
+        ts      = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        run_dir = Path('output') / 'runs' / f'run_{ts}_{self.run_id}'
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Manifest ─────────────────────────────────────────────────────────
+        manifest = {
+            'run_id'       : self.run_id,
+            'timestamp'    : datetime.datetime.now().isoformat(timespec='seconds'),
+            'n_years'      : self.params.n_years,
+            'total_steps'  : self.total_steps,
+            'start_year'   : config.START_YEAR,
+            'end_year'     : config.START_YEAR + self.params.n_years,
+            'workforce_scale': self.params.workforce_scale,
+            'params'       : dataclasses.asdict(self.params),
+            'config_snapshot': {
+                'INITIAL_WORKFORCE'          : config.INITIAL_WORKFORCE,
+                'MFG_ENTRY_PCT'              : config.MFG_ENTRY_PCT,
+                'ANNUAL_WORKING_AGE_COHORT'  : config.ANNUAL_WORKING_AGE_COHORT,
+                'BASE_GROWTH_RATE'           : config.BASE_GROWTH_RATE,
+                'ALPHA'                      : config.ALPHA,
+                'BETA'                       : config.BETA,
+                'PLACEMENT_PROBABILITY'      : config.PLACEMENT_PROBABILITY,
+                'INDUSTRY_GROWTH_RATE'       : config.INDUSTRY_GROWTH_RATE,
+                'RESHORING_TOTAL_M'          : config.RESHORING_TOTAL_M,
+                'MGMT_GRAD_RATE'             : config.MGMT_GRAD_RATE,
+                'RETIREMENT_TENURE_THRESHOLD': config.RETIREMENT_TENURE_THRESHOLD,
+                'RETIREMENT_BASE_RATE'       : config.RETIREMENT_BASE_RATE,
+                'SHOCK_PROBABILITY'          : config.SHOCK_PROBABILITY,
+                'SHOCK_REMOVAL_RATE'         : config.SHOCK_REMOVAL_RATE,
+                'BARRIER_PARAMS'             : dict(config.BARRIER_PARAMS),
+                'QUIT_RATE_BY_TIER'          : {str(k): v for k, v in config.QUIT_RATE_BY_TIER.items()},
+                'CAREER_CHANGE_RATE'         : {str(k): v for k, v in config.CAREER_CHANGE_RATE.items()},
+                'GRAD_SKILL_THRESH'          : {str(k): v for k, v in config.GRAD_SKILL_THRESH.items()},
+                'GRAD_MIN_TENURE'            : {str(k): v for k, v in config.GRAD_MIN_TENURE.items()},
+                'INITIAL_TIER_DISTRIBUTION'  : {str(k): v for k, v in config.INITIAL_TIER_DISTRIBUTION.items()},
+            },
+        }
+        with open(run_dir / 'manifest.json', 'w') as f:
+            json.dump(manifest, f, indent=2)
+
+        # 2. Event catalogue ───────────────────────────────────────────────────
+        if self._all_events:
+            fieldnames = ['run_id'] + list(self._all_events[0].keys())
+            with open(run_dir / 'event_catalogue.csv', 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for evt in self._all_events:
+                    writer.writerow({'run_id': self.run_id, **evt})
+
+        # 3. Quarterly summary ─────────────────────────────────────────────────
+        df = Simulation.to_dataframe(snapshots)
+        df.insert(0, 'run_id', self.run_id)
+        df.to_csv(run_dir / 'quarterly_summary.csv', index=False)
+
+        self.output_dir = run_dir
+        print(f"Run outputs saved -> {run_dir.resolve()}")
 
     @staticmethod
     def to_dataframe(snapshots: List[Snapshot]) -> pd.DataFrame:

@@ -57,9 +57,9 @@ def _print_table(df: pd.DataFrame, label: str = ""):
               f"{fill_pct:>5.1f}%  {binding:>13.1f}  {pool:>6}")
 
 
-def run_single(scale: int = 1):
-    print(f"Running base-case simulation (workforce scale: 1/{scale})...")
-    sim   = Simulation(SimParams(seed=config.MC_SEED, workforce_scale=scale))
+def run_single(scale: int = 1, n_years: int = 8):
+    print(f"Running base-case simulation (workforce scale: 1/{scale}, {n_years} years)...")
+    sim   = Simulation(SimParams(seed=config.MC_SEED, workforce_scale=scale, n_years=n_years))
     snaps = sim.run()
     df    = Simulation.to_dataframe(snaps)
 
@@ -357,6 +357,7 @@ _KNOB_TO_SIMPARAMS = {
     'shock_prob':  'shock_probability',
     'shock_rem':   'shock_removal_rate',
     'ind_growth':  'industry_growth',
+    'n_years':     'n_years',
 }
 
 
@@ -515,6 +516,9 @@ if __name__ == "__main__":
     parser.add_argument("--scale",       type=int, default=1,
                         help="Divide workforce by this factor for fast testing "
                              "(e.g. --scale 1000 uses ~12,690 workers)")
+    parser.add_argument("--years",       type=int, default=8,
+                        help="Simulation length in years (default: 8 = 2025-2033). "
+                             "Use 20 or 30 for long-range projections.")
     args = parser.parse_args()
 
     # Read optional params override from stdin
@@ -528,10 +532,11 @@ if __name__ == "__main__":
                 pass
 
     if args.stream_json:
+        overrides['n_years'] = args.years
         run_streaming(scale=args.scale, overrides=overrides)
     elif args.mc:
         run_mc(n_runs=args.n)
     elif args.stress:
         run_stress(scale=args.scale)
     else:
-        run_single(scale=args.scale)
+        run_single(scale=args.scale, n_years=args.years)

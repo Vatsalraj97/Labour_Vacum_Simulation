@@ -99,8 +99,15 @@ class Ball:
     # ── derived properties ────────────────────────────────────────────────────
     @property
     def is_near_retirement(self) -> bool:
-        """True once tenure exceeds the retirement threshold in config."""
-        return self.tenure >= config.RETIREMENT_TENURE_THRESHOLD
+        """
+        True once the worker's AGE in quarters exceeds retirement age threshold.
+        Uses ball.age (initialised to real age quarters in _populate_initial_workforce).
+        Retirement age = 65 years = 260 quarters.
+        RETIREMENT_TENURE_THRESHOLD is used for the escalation formula in event_engine
+        but eligibility is now age-gated here.
+        Source: BLS CPS average manufacturing retirement age ~63-65 (SIPP data).
+        """
+        return self.age >= 240  # 60 years old = 240 quarters — early retirement threshold
 
     @property
     def effective_output(self) -> float:

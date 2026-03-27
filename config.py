@@ -103,24 +103,24 @@ PLACEMENT_PROBABILITY = 0.7
 # Source: BLS JOLTS quit rates by industry (Table 16)
 # Lower tiers have higher quit rates
 QUIT_RATE_BY_TIER = {
-    0.1: 0.045,  # ~18%/yr  — high churn at entry
-    0.2: 0.038,
-    0.3: 0.030,
-    0.4: 0.025,  # ~10%/yr  — general manufacturing baseline
-    0.5: 0.020,
-    0.6: 0.015,
-    0.7: 0.012,
-    0.8: 0.009,
-    0.9: 0.007,
-    1.0: 0.005,  # ~2%/yr   — experts rarely leave
+    0.1: 0.0250,  # ~10%/yr  — manufacturing-exit quit (BLS JOLTS Table 16)
+    0.2: 0.0211,
+    0.3: 0.0167,
+    0.4: 0.0139,
+    0.5: 0.0111,
+    0.6: 0.0083,
+    0.7: 0.0067,
+    0.8: 0.0050,
+    0.9: 0.0039,
+    1.0: 0.0028,  # ~1.1%/yr — experts rarely leave
 }
 
 # Retirement (age-driven)
 # PLACEHOLDER: Quarterly retirement probability by worker age quartile
 # Source: BLS CPS, SIPP (Survey of Income & Program Participation)
 # In simulation, age is proxied by total tenure in the system
-RETIREMENT_TENURE_THRESHOLD = 28   # quarters (7 years) before retirement risk rises
-RETIREMENT_BASE_RATE        = 0.008  # quarterly rate once above threshold
+RETIREMENT_TENURE_THRESHOLD = 120   # quarters (30 years) before retirement risk rises
+RETIREMENT_BASE_RATE        = 0.035  # quarterly rate once above threshold
 # Scales up with tenure beyond threshold — see exit_engine.py
 
 # Policy shock (ICE raids, layoffs, recession)
@@ -147,11 +147,11 @@ SHOCK_TIER_WEIGHTS = {
 
 # PLACEHOLDER: Annual industry output growth rate
 # Source: UNIDO World Manufacturing Production Q1 2025
-INDUSTRY_GROWTH_RATE = 0.045   # 4.5% per year
+INDUSTRY_GROWTH_RATE = 0.019   # 1.9% per year (UNIDO 2024 USA baseline)
 
 # PLACEHOLDER: Total reshoring labour demand 2025–2033 (millions)
 # Source: Reshoring Initiative 2024 + CHIPS Act + IRA + IIJA
-RESHORING_TOTAL_M = 0.800   # 800k workers total over 9 years
+RESHORING_TOTAL_M = 0.300   # 300k workers total over 9 years (Reshoring Initiative 2024)
 
 # PLACEHOLDER: Tier distribution of reshoring demand
 # Reshoring tends to create mid-tier jobs (CNC, electronics assembly)
@@ -212,8 +212,8 @@ BARRIER_PARAMS = dict(
     age_yield_scale     = 0.04,   # training yield discount per year above 25
     yield_base          = 0.85,   # baseline training yield probability
     pool_decay_rate     = 0.97,   # quarterly skill decay rate while in pool
-    pool_floor          = 0.50,   # minimum P_pool (prevents complete lock-out)
-    k_pool_sensitivity  = 2,      # competition sensitivity in P_pool factor (lowered from 10)
+    pool_floor          = 0.20,   # minimum P_pool (BLS JOLTS: 8-12 applicants/opening)
+    k_pool_sensitivity  = 5,      # competition sensitivity in P_pool factor
     luck_p              = 0.002,  # small additive luck term in P_barrier
     beta_crowd          = 0.1,    # crowding sensitivity in P_crowd factor (lowered from 5.0)
 )
@@ -242,7 +242,7 @@ MGMT_SKILL_THRESH  = {0.1: 0.0,  0.2: 0.0,  0.3: 0.0,  0.4: 0.38, 0.5: 0.47,
                       0.6: 0.56, 0.7: 0.65, 0.8: 0.74, 0.9: 0.84, 1.0: 0.95}
 MGMT_MIN_TENURE    = {0.1:  0,   0.2:  0,   0.3:  0,   0.4: 16,   0.5: 16,
                       0.6: 20,   0.7: 24,   0.8: 28,   0.9: 32,   1.0: 40}
-MGMT_GRAD_RATE     = 0.30
+MGMT_GRAD_RATE     = 0.015
 
 # ── Career change rates (exits permanently to non-manufacturing) ───────────────
 # PLACEHOLDER: separate from voluntary quit because career changers never return.
@@ -267,3 +267,27 @@ INJURY_SKILL_PENALTY = {0.1: 0.02, 0.2: 0.03, 0.3: 0.04, 0.4: 0.05, 0.5: 0.04,
                         0.6: 0.06, 0.7: 0.07, 0.8: 0.08, 0.9: 0.10, 1.0: 0.12}
 INJURY_RECOVERY_Q    = {0.1: 1, 0.2: 1, 0.3: 2, 0.4: 2, 0.5: 2,
                         0.6: 3, 0.7: 3, 0.8: 4, 0.9: 5, 1.0: 6}
+
+
+def validate_config():
+    """
+    Sanity-check critical parameter relationships.
+    Call from simulation.__init__() to catch miscalibration early.
+    """
+    assert sum(INITIAL_TIER_DISTRIBUTION.values()) <= 1.01, \
+        "INITIAL_TIER_DISTRIBUTION sums > 1"
+    assert all(v >= 0 for v in QUIT_RATE_BY_TIER.values()), \
+        "Negative quit rate"
+    assert all(v >= 0 for v in CAREER_CHANGE_RATE.values()), \
+        "Negative career change rate"
+    assert MGMT_GRAD_RATE <= 0.10, \
+        f"MGMT_GRAD_RATE={MGMT_GRAD_RATE} suspiciously high (>10%/qtr)"
+    assert RETIREMENT_TENURE_THRESHOLD >= 40, \
+        f"RETIREMENT_TENURE_THRESHOLD={RETIREMENT_TENURE_THRESHOLD} too low — workers retire too young"
+    assert BARRIER_PARAMS['pool_floor'] <= 0.40, \
+        "pool_floor too generous — placement is not realistic"
+    assert 0 < MFG_ENTRY_PCT < 0.20, \
+        "MFG_ENTRY_PCT out of realistic range"
+    for tier in TUBE_TIERS:
+        assert GRAD_SKILL_THRESH.get(tier, 0) < tier, \
+            f"GRAD_SKILL_THRESH[{tier}] must be less than tier ceiling"

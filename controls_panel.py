@@ -16,6 +16,16 @@ from PyQt6.QtGui import QFont
 
 MECHANISMS = [
     {
+        "name": "Simulation Setup", "color": "#6b7280",
+        "knobs": [
+            {"id": "n_years", "label": "Length (years)",
+             "min": 8, "max": 30, "step": 1, "default": 8,
+             "fmt": "f0",
+             "desc": "How many years to simulate. 8 = 2025-2033 base case. "
+                     "20-30 = long-range projections to 2045-2055."},
+        ],
+    },
+    {
         "name": "Population Pipeline", "color": "#3d9cf5",
         "knobs": [
             {"id": "cohort", "label": "Annual cohort",
@@ -67,11 +77,11 @@ MECHANISMS = [
              "fmt": "pct0",
              "desc": "Skill fraction of tier ceiling required for graduation. 0.90 = need 90%."},
             {"id": "mgmt_rate", "label": "Management drain",
-             "min": 0.05, "max": 0.60, "step": 0.01, "default": 0.30,
+             "min": 0.005, "max": 0.08, "step": 0.005, "default": 0.015,
              "fmt": "pct0",
-             "desc": "Quarterly probability eligible worker exits to management."},
+             "desc": "Quarterly probability eligible worker exits to management. ~1.5%/qtr = ~6%/yr (BLS OEWS)."},
             {"id": "place_sigma", "label": "Placement sigma",
-             "min": 0.05, "max": 0.50, "step": 0.01, "default": 0.25,
+             "min": 0.05, "max": 0.50, "step": 0.01, "default": 0.12,
              "fmt": "f2",
              "desc": "Hiring acceptance distribution right tail. Wider = more forgiving."},
             {"id": "pool_decay", "label": "Pool decay rate",
@@ -92,9 +102,9 @@ MECHANISMS = [
              "fmt": "pct1",
              "desc": "Quarterly probability of permanently leaving manufacturing at T0.1."},
             {"id": "retire_thr", "label": "Retirement threshold",
-             "min": 12, "max": 60, "step": 2, "default": 28,
+             "min": 40, "max": 200, "step": 4, "default": 120,
              "fmt": "qtrs",
-             "desc": "Quarters before retirement probability escalates. 28Q = 7 years."},
+             "desc": "Quarters of tenure before retirement risk rises. 120Q = 30yr career (BLS SIPP)."},
             {"id": "frust_base", "label": "Frustration rate",
              "min": 0.002, "max": 0.10, "step": 0.002, "default": 0.02,
              "fmt": "pct1",
@@ -147,6 +157,8 @@ MECHANISMS = [
 
 
 def _fmt_value(value: float, fmt: str) -> str:
+    if fmt == 'f0':
+        return f'{int(value)}'
     if fmt == 'M2':
         return f'{value / 1_000_000:.2f}M'
     if fmt == 'pct1':

@@ -33,7 +33,7 @@ from __future__ import annotations
 import math
 import random
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import config
 import barrier_engine
@@ -45,8 +45,32 @@ from growth_engine  import _growth_delta        # noqa: F401
 from exit_engine    import exit_summary         # noqa: F401
 from inflow_engine  import _assign_tube         # noqa: F401
 
-# EventLog entry: (ball, tier_at_event_time, reason_string)
-EventLog = List[Tuple[Ball, Optional[float], str]]
+# EventLog entry: dict snapshot of ball state at the moment the event fires.
+# Keys: quarter, year, ball_id, event_type, tier, skill, age_qtrs,
+#        tenure, tube_tenure, immigrant
+EventLog = List[Dict[str, Any]]
+
+
+def _event_record(
+    ball  : Ball,
+    tier  : Optional[float],
+    reason: str,
+    step  : int,
+    year  : float,
+) -> Dict[str, Any]:
+    """Capture ball state at the instant an event fires."""
+    return {
+        'quarter'    : step,
+        'year'       : round(year, 2),
+        'ball_id'    : ball.ball_id,
+        'event_type' : reason,
+        'tier'       : tier,
+        'skill'      : round(ball.skill, 4),
+        'age_qtrs'   : ball.age,
+        'tenure'     : ball.tenure,
+        'tube_tenure': ball.tube_tenure,
+        'immigrant'  : ball.immigrant,
+    }
 
 
 # =============================================================================
@@ -61,6 +85,8 @@ def process_all_events(
     system_state  : SystemState,
     params,                                # SimParams duck-typed (no circular import)
     rng           : random.Random,
+    step          : int   = 0,
+    year          : float = 0.0,
 ) -> EventLog:
     """
     Run the full priority-ordered event chain for all agents in one quarter.
@@ -81,7 +107,7 @@ def process_all_events(
 
         for ball in list(tube.balls):   # snapshot list before mutations
             outcome = _process_tube_ball(
-                ball, tier, ts, sorted_tiers, system_state, params, rng, log
+                ball, tier, ts, sorted_tiers, system_state, params, rng, log, step, year
             )
             if outcome == 'removed':
                 perm_removed.append(ball)
@@ -131,7 +157,7 @@ def process_all_events(
             )
             if rng.random() < p_place:
                 placements.append((ball, tgt))
-                log.append((ball, tgt, 'placement'))
+                log.append(_event_record(ball, tgt, 'placement', step, year))
                 placed = True
 
         if not placed:
@@ -146,7 +172,7 @@ def process_all_events(
             disc_p = 0.005 * max(0.0, (ball.pool_tenure - 12) / 12.0)
             if disc_p > 0.0 and rng.random() < disc_p:
                 discouragements.append(ball)
-                log.append((ball, None, 'discouragement'))
+                log.append(_event_record(ball, None, 'discouragement', step, year))
 
     # Apply pool moves
     for ball, tgt in placements:
@@ -175,7 +201,7 @@ def process_all_events(
         pool.add(ball)   # return to active waiting list
 
     # ── Event 16: new entrants ────────────────────────────────────────────────
-    _entry_events(tubes_by_tier, sorted_tiers, params, rng, log)
+    _entry_events(tubes_by_tier, sorted_tiers, params, rng, log, step, year)
 
     return log
 
@@ -193,6 +219,8 @@ def _process_tube_ball(
     params,
     rng          : random.Random,
     log          : EventLog,
+    step         : int   = 0,
+    year         : float = 0.0,
 ) -> str:
     """
     Process events 1-12 for one ball. Returns movement outcome:
@@ -209,7 +237,7 @@ def _process_tube_ball(
     # below their tier ceiling (operating out of depth).
     fatal_p = config.FATAL_INJURY_RATE.get(tier, 0.0) * ts.death_rate_modifier
     if rng.random() < fatal_p:
-        log.append((ball, tier, 'fatal_injury'))
+        log.append(_event_record(ball, tier, 'fatal_injury', step, year))
         return 'removed'
 
     # 2. Shock removal ─────────────────────────────────────────────────────────
@@ -218,7 +246,7 @@ def _process_tube_ball(
         weight     = config.SHOCK_TIER_WEIGHTS.get(tier, 1.0)
         shock_rate = min(params.shock_removal_rate * weight, 0.5)
         if rng.random() < shock_rate:
-            log.append((ball, tier, 'shock_removal'))
+            log.append(_event_record(ball, tier, 'shock_removal', step, year))
             return 'removed'
 
     # 3. Retirement ────────────────────────────────────────────────────────────
@@ -232,7 +260,7 @@ def _process_tube_ball(
         )
         retire_p = min(retire_p, 0.35)
         if rng.random() < retire_p:
-            log.append((ball, tier, 'retirement'))
+            log.append(_event_record(ball, tier, 'retirement', step, year))
             return 'removed'
 
     # 4. Serious injury (exits to injured sub-pool) ────────────────────────────
@@ -243,7 +271,7 @@ def _process_tube_ball(
     if rng.random() < serious_p:
         penalty    = config.INJURY_SKILL_PENALTY.get(tier, 0.0)
         ball.skill = max(0.001, ball.skill - penalty)
-        log.append((ball, tier, 'serious_injury'))
+        log.append(_event_record(ball, tier, 'serious_injury', step, year))
         return 'to_injured'
 
     # 5. Minor injury (non-exit — ball stays in tube) ─────────────────────────
@@ -252,7 +280,7 @@ def _process_tube_ball(
     if rng.random() < minor_p:
         penalty    = config.INJURY_SKILL_PENALTY.get(tier, 0.0)
         ball.skill = max(0.001, ball.skill - penalty * 0.4)
-        log.append((ball, tier, 'minor_injury'))
+        log.append(_event_record(ball, tier, 'minor_injury', step, year))
         # NOT an exit — chain continues
 
     # 6. Graduation ────────────────────────────────────────────────────────────
@@ -265,7 +293,7 @@ def _process_tube_ball(
     if ball.skill >= grad_thresh and ball.tube_tenure >= grad_min_tenure:
         next_tier        = next((t for t in sorted_tiers if t > tier), None)
         ball.target_tier = next_tier
-        log.append((ball, tier, 'graduation'))
+        log.append(_event_record(ball, tier, 'graduation', step, year))
         return 'to_pool'
 
     # 7. Management graduation ─────────────────────────────────────────────────
@@ -277,7 +305,7 @@ def _process_tube_ball(
     mgmt_min_tenure = config.MGMT_MIN_TENURE.get(tier, 9999)
     if mgmt_thresh > 0.0 and ball.skill >= mgmt_thresh and ball.tube_tenure >= mgmt_min_tenure:
         if rng.random() < config.MGMT_GRAD_RATE:
-            log.append((ball, tier, 'management_graduation'))
+            log.append(_event_record(ball, tier, 'management_graduation', step, year))
             return 'removed'
 
     # 8. Lucky break (non-exit) ────────────────────────────────────────────────
@@ -288,7 +316,7 @@ def _process_tube_ball(
     lam = ts.lucky_break_lambda
     if rng.random() < (1.0 - math.exp(-lam)):
         growth_multiplier = 5.0
-        log.append((ball, tier, 'lucky_break'))
+        log.append(_event_record(ball, tier, 'lucky_break', step, year))
 
     # 9. Skill growth ──────────────────────────────────────────────────────────
     dskill     = ts.growth_field(ball.skill) * growth_multiplier
@@ -311,7 +339,7 @@ def _process_tube_ball(
             config.FRUSTRATION_BASE_RATE + config.FRUSTRATION_SCALE * stagnancy_score,
         )
         if rng.random() < frust_p:
-            log.append((ball, tier, 'frustration_quit'))
+            log.append(_event_record(ball, tier, 'frustration_quit', step, year))
             return 'removed'
 
     # 11. Voluntary quit ───────────────────────────────────────────────────────
@@ -320,7 +348,7 @@ def _process_tube_ball(
     quit_rate = config.QUIT_RATE_BY_TIER.get(tier, 0.02)
     if rng.random() < quit_rate:
         ball.target_tier = None
-        log.append((ball, tier, 'voluntary_quit'))
+        log.append(_event_record(ball, tier, 'voluntary_quit', step, year))
         return 'to_pool'
 
     # 12. Career change (exits permanently to non-manufacturing sector) ─────────
@@ -329,7 +357,7 @@ def _process_tube_ball(
     # return to pool / re-enter.
     career_rate = config.CAREER_CHANGE_RATE.get(tier, 0.005)
     if rng.random() < career_rate:
-        log.append((ball, tier, 'career_change'))
+        log.append(_event_record(ball, tier, 'career_change', step, year))
         return 'removed'
 
     return 'stayed'
@@ -345,6 +373,8 @@ def _entry_events(
     params,
     rng           : random.Random,
     log           : EventLog,
+    step          : int   = 0,
+    year          : float = 0.0,
 ) -> None:
     """
     Create new Ball objects for this quarter's manufacturing entrants.
@@ -386,4 +416,4 @@ def _entry_events(
         if valid:
             tgt = valid[0]
             tubes_by_tier[tgt].add_ball(ball)
-            log.append((ball, tgt, 'entry'))
+            log.append(_event_record(ball, tgt, 'entry', step, year))
