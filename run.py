@@ -22,6 +22,7 @@
 import argparse
 import json
 import sys
+import time
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -57,13 +58,16 @@ def _print_table(df: pd.DataFrame, label: str = ""):
               f"{fill_pct:>5.1f}%  {binding:>13.1f}  {pool:>6}")
 
 
-def run_single(scale: int = 1, n_years: int = 8):
+def run_single(scale: int = 1, n_years: int = 8, slow: bool = False):
     print(f"Running base-case simulation (workforce scale: 1/{scale}, {n_years} years)...")
     sim   = Simulation(SimParams(seed=config.MC_SEED, workforce_scale=scale, n_years=n_years))
     snaps = sim.run()
     df    = Simulation.to_dataframe(snaps)
 
-    _print_table(df, "BASE CASE")
+    if slow:
+        _print_table_slow(df, snaps, delay=0.4)
+    else:
+        _print_table(df, "BASE CASE")
 
     out_csv = Path("output_base.csv")
     df.to_csv(out_csv, index=False)
@@ -71,6 +75,26 @@ def run_single(scale: int = 1, n_years: int = 8):
 
     _plot_single(df)
     return df
+
+
+def _print_table_slow(df: pd.DataFrame, snaps, delay: float = 0.4):
+    """Print one quarter at a time with a delay so you can watch it live."""
+    print(f"\n{'='*62}\nBASE CASE  (live quarter-by-quarter)\n{'='*62}")
+    print(f"\n{'Year':>6}  {'Total Workers':>14}  {'System Vacuum':>14}  "
+          f"{'Fill%':>6}  {'Binding Tier':>13}  {'Pool':>6}")
+    print("-" * 72)
+    for year in sorted(df["year"].unique()):
+        ydf          = df[df["year"] == year]
+        total_workers = ydf["headcount"].sum()
+        total_vacuum  = ydf["vacuum"].sum()
+        total_demand  = ydf["demand_height"].sum()
+        total_eff_vol = ydf["eff_volume"].sum()
+        fill_pct      = (total_eff_vol / total_demand * 100) if total_demand > 0 else 0
+        binding       = ydf.loc[ydf["vacuum"].idxmax(), "tier"]
+        pool          = ydf["pool_size"].values[0]
+        print(f"{year:>6.2f}  {total_workers:>14,}  {total_vacuum:>14.1f}  "
+              f"{fill_pct:>5.1f}%  {binding:>13.1f}  {pool:>6}", flush=True)
+        time.sleep(delay)
 
 
 # =============================================================================
@@ -516,6 +540,8 @@ if __name__ == "__main__":
     parser.add_argument("--scale",       type=int, default=1,
                         help="Divide workforce by this factor for fast testing "
                              "(e.g. --scale 1000 uses ~12,690 workers)")
+    parser.add_argument("--slow",        action="store_true",
+                        help="Print each quarter live with a short delay so you can watch it run")
     parser.add_argument("--years",       type=int, default=8,
                         help="Simulation length in years (default: 8 = 2025-2033). "
                              "Use 20 or 30 for long-range projections.")
@@ -539,4 +565,4 @@ if __name__ == "__main__":
     elif args.stress:
         run_stress(scale=args.scale)
     else:
-        run_single(scale=args.scale, n_years=args.years)
+        run_single(scale=args.scale, n_years=args.years, slow=args.slow)
